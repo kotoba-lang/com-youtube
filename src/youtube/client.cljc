@@ -12,13 +12,23 @@
   client's behavior (`kotoba-lang/youtube-upload/src/youtube_upload/client.py`)
   rather than guessing at the API.
 
-  Request/response shaping is pure `.cljc`. The actual HTTP call is
-  JVM-only by default (`java.net.http`) but every function takes an
-  injectable `:http-fn` -- the same `{:url :method :headers :body} ->
-  {:status :body}` convention `kotoba-lang/com-cloudflare` uses -- so every
-  namespace here is testable with a stub, never only against a live
-  account. `:body` may be a String or a JVM byte array (video/image bytes);
-  the default transport handles both.
+  **Every namespace here runs on both Clojure and ClojureScript** (JSON,
+  form encoding, byte handling and the multipart body are all reader-
+  conditional; see youtube.portable-test for the cljs half). Until
+  2026-08-11 every effectful fn was wrapped in `#?(:clj ...)`, so a library
+  that advertised `.cljc` portability existed on one runtime only, and nbb
+  operators had to shell out to a separate Python client to publish.
+
+  The transport is the one thing that is not shared: `jvm-http-fn`
+  (java.net.http) is the JVM default, and **cljs has no default on purpose**
+  -- every function is written against a *synchronous* http-fn and JS has no
+  synchronous fetch, so a cljs default could only be a lie that hands back a
+  promise where the code expects a response map. cljs callers inject their
+  own (nbb operators drive `curl` through execFileSync). The convention is
+  the same `{:url :method :headers :body} -> {:status :body}` one
+  `kotoba-lang/com-cloudflare` uses, so every namespace is testable with a
+  stub, never only against a live account. `:body` may be a String or an
+  opaque byte buffer (JVM byte[] / JS Uint8Array) for video/image/SRT bytes.
 
   Credentials: never held or defaulted by this library. Callers pass
   `:client-id`/`:client-secret`/`:refresh-token`/`:access-token` explicitly
@@ -33,8 +43,64 @@
 (def upload-api "https://www.googleapis.com/upload/youtube/v3")
 
 #?(:clj (def mapper (json/object-mapper {:decode-key-fn keyword})))
-#?(:clj (defn write-json [x] (json/write-value-as-string x mapper)))
-#?(:clj (defn read-json [s] (json/read-value s mapper)))
+
+(defn write-json [x]
+  #?(:clj  (json/write-value-as-string x mapper)
+     :cljs (js/JSON.stringify (clj->js x))))
+
+(defn read-json [s]
+  #?(:clj  (json/read-value s mapper)
+     :cljs (js->clj (js/JSON.parse s) :keywordize-keys true)))
+
+(defn url-encode
+  "application/x-www-form-urlencoded escaping. cljs's encodeURIComponent
+  differs from URLEncoder in exactly one place that matters here — space
+  becomes %20 rather than + — so it is normalised, and the reserved
+  characters URLEncoder escapes but encodeURIComponent leaves alone are
+  escaped explicitly. Both sides then produce the same bytes for the same
+  input, which is what lets one refresh-token flow serve both runtimes."
+  [s]
+  #?(:clj (java.net.URLEncoder/encode ^String s "UTF-8")
+     :cljs (-> (js/encodeURIComponent s)
+               (str/replace #"%20" "+")
+               (str/replace "!" "%21") (str/replace "'" "%27")
+               (str/replace "(" "%28") (str/replace ")" "%29")
+               (str/replace "~" "%7E"))))
+
+(defn byte-count
+  "Length of an opaque body buffer: JVM byte[] or a JS Uint8Array."
+  [b]
+  #?(:clj (alength ^bytes b) :cljs (.-length b)))
+
+(defn now-ms []
+  #?(:clj (System/currentTimeMillis) :cljs (.getTime (js/Date.))))
+
+(defn utf8-bytes
+  "String -> opaque byte buffer (JVM byte[] / JS Uint8Array)."
+  [^String s]
+  #?(:clj (.getBytes s "UTF-8") :cljs (.encode (js/TextEncoder.) s)))
+
+(defn concat-bytes
+  "Join byte buffers end to end, preserving bytes exactly. Used to build the
+  multipart/related caption body, where the SRT part is opaque and must not
+  be round-tripped through a String."
+  [buffers]
+  #?(:clj
+     (let [total (reduce + 0 (map byte-count buffers))
+           out (byte-array total)]
+       (loop [[b & more] buffers off 0]
+         (if (nil? b)
+           out
+           (do (System/arraycopy b 0 out off (byte-count b))
+               (recur more (+ off (byte-count b)))))))
+     :cljs
+     (let [total (reduce + 0 (map byte-count buffers))
+           out (js/Uint8Array. total)]
+       (loop [[b & more] buffers off 0]
+         (if (nil? b)
+           out
+           (do (.set out b off)
+               (recur more (+ off (byte-count b)))))))))
 
 #?(:clj
 (defn jvm-http-fn
@@ -65,16 +131,39 @@
         :response-headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)]))
                                 (.map (.headers resp)))})))))
 
-#?(:clj
+(defn default-http-fn
+  "The transport used when a caller injects none.
+
+  On the JVM that is java.net.http. **On cljs there is deliberately no
+  default.** Every function in this library is written against a
+  *synchronous* http-fn — `(let [resp (http-fn ...)] ...)` — and JS has no
+  synchronous fetch, so a cljs default could only be a lie that returns a
+  promise where the code expects a response map. Callers on cljs inject
+  their own synchronous transport (nbb operators drive `curl` through
+  execFileSync); the request/response shaping, the flow, and the error
+  staging stay shared.
+
+  The cljs value fails when *called*, not when constructed. Destructuring
+  `:or` defaults are evaluated eagerly — `(get m :http-fn (default-http-fn))`
+  runs the default even when the caller injected a transport — so throwing
+  from here would break every correct cljs caller."
+  []
+  #?(:clj (jvm-http-fn)
+     :cljs (fn [_]
+             (throw (ex-info (str "youtube: no default transport on cljs — pass :http-fn. "
+                                  "This library's contract is a synchronous "
+                                  "{:url :method :headers :body} -> {:status :body :response-headers} fn.")
+                             {:stage :transport})))))
+
 (defn refresh-access-token!
   "Exchange a stored OAuth2 refresh token for a short-lived access token.
   {:client-id :client-secret :refresh-token} -> the access-token string.
   Throws ex-info on a non-2xx response or a response with no access_token."
   ([creds] (refresh-access-token! creds {}))
-  ([{:keys [client-id client-secret refresh-token]} {:keys [http-fn] :or {http-fn (jvm-http-fn)}}]
-   (let [form (str "client_id=" (java.net.URLEncoder/encode client-id "UTF-8")
-                   "&client_secret=" (java.net.URLEncoder/encode client-secret "UTF-8")
-                   "&refresh_token=" (java.net.URLEncoder/encode refresh-token "UTF-8")
+  ([{:keys [client-id client-secret refresh-token]} {:keys [http-fn] :or {http-fn (default-http-fn)}}]
+   (let [form (str "client_id=" (url-encode client-id)
+                   "&client_secret=" (url-encode client-secret)
+                   "&refresh_token=" (url-encode refresh-token)
                    "&grant_type=refresh_token")
          resp (http-fn {:url token-url :method :post
                         :headers {"Content-Type" "application/x-www-form-urlencoded"}
@@ -84,8 +173,7 @@
      (let [token (:access_token (read-json (:body resp)))]
        (when-not token
          (throw (ex-info "youtube oauth response has no access_token" {:stage "oauth" :body (:body resp)})))
-       token)))))
+       token))))
 
-#?(:clj
 (defn auth-header [access-token]
-  {"Authorization" (str "Bearer " access-token)}))
+  {"Authorization" (str "Bearer " access-token)})

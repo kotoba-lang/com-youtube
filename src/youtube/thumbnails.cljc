@@ -6,16 +6,15 @@
 
 (def thumbnails-set-url (str client/upload-api "/thumbnails/set"))
 
-#?(:clj
 (defn set-thumbnail!
   "youtube-video-id + png-bytes (JVM byte[]) -> nil on success. Throws
   ex-info on a non-2xx response."
   ([access-token youtube-video-id png-bytes] (set-thumbnail! access-token youtube-video-id png-bytes {}))
-  ([access-token youtube-video-id png-bytes {:keys [http-fn] :or {http-fn (client/jvm-http-fn)}}]
+  ([access-token youtube-video-id png-bytes {:keys [http-fn] :or {http-fn (client/default-http-fn)}}]
    (let [resp (http-fn {:url (str thumbnails-set-url "?videoId=" youtube-video-id)
                         :method :post
                         :headers (merge (client/auth-header access-token) {"Content-Type" "image/png"})
                         :body png-bytes})]
      (when-not (#{200 201} (:status resp))
        (throw (ex-info "youtube thumbnails.set failed" {:stage :thumbnail :status (:status resp) :body (:body resp)})))
-     nil))))
+     nil)))

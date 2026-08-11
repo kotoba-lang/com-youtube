@@ -31,8 +31,12 @@ youtube.thumbnails  -- thumbnails.set (raw PNG POST)
 ```
 
 Request/response shaping (metadata bodies, multipart body construction,
-header maps) is pure `.cljc`. The actual HTTP call is JVM-only by default
-(`java.net.http`) but every function takes an injectable `:http-fn`
+header maps) is pure `.cljc` and **runs on both Clojure and ClojureScript**
+(JSON, form encoding, byte handling and the multipart body are all reader-
+conditional). The transport is the one thing not shared: java.net.http is
+the JVM default and cljs has no default on purpose (this library's contract
+is a *synchronous* http-fn and JS has no synchronous fetch — cljs callers
+inject their own; nbb operators drive `curl` through execFileSync) but every function takes an injectable `:http-fn`
 (`{:url :method :headers :body} -> {:status :body :response-headers}`, the
 same convention `kotoba-lang/com-cloudflare` uses) -- every namespace here
 is tested with a stub, never only against a live account. `:body` may be a
