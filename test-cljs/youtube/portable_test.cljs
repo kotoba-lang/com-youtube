@@ -11,7 +11,8 @@
   (:require [cljs.test :refer [deftest is testing run-tests]]
             [youtube.client :as client]
             [youtube.videos :as videos]
-            [youtube.captions :as captions]))
+            [youtube.captions :as captions]
+            [youtube.channels :as channels]))
 
 (defn stub
   "A synchronous transport that replays canned responses and records requests."
@@ -82,6 +83,36 @@
     (let [f (client/default-http-fn)]
       (is (fn? f))
       (is (thrown-with-msg? js/Error #"no default transport" (f {}))))))
+
+;; ---- the shared surface extracted from shiropico's four tool copies -------
+
+(deftest assert-channel-guard-on-cljs
+  (let [ok (fn [body] (fn [_] {:status 200 :body body :response-headers {}}))]
+    (is (= {:id "UC-x" :title "Yukkuri"}
+           (channels/assert-channel! "tok" "UC-x"
+             {:http-fn (ok (client/write-json {:items [{:id "UC-x" :snippet {:title "Yukkuri"}}]}))})))
+    (testing "a different channel is refused — this is the check that cannot be undone by deleting"
+      (is (thrown-with-msg? js/Error #"channel mismatch"
+            (channels/assert-channel! "tok" "UC-x"
+              {:http-fn (ok (client/write-json {:items [{:id "UC-other" :snippet {:title "B"}}]}))}))))
+    (testing "two channels on one token is ambiguity, not success"
+      (is (thrown? js/Error
+            (channels/assert-channel! "tok" "UC-x"
+              {:http-fn (ok (client/write-json {:items [{:id "UC-x" :snippet {:title "A"}}
+                                                        {:id "UC-b" :snippet {:title "B"}}]}))}))))))
+
+(deftest privacy-body-on-cljs
+  (let [b (videos/privacy-body "vid1" {:license "creativeCommon" :embeddable false
+                                       :publicStatsViewable false :madeForKids true} "public")]
+    (is (= "public" (get-in b [:status :privacyStatus])))
+    (is (= "creativeCommon" (get-in b [:status :license])))
+    (is (true? (get-in b [:status :selfDeclaredMadeForKids])))
+    (is (nil? (get-in b [:status :madeForKids])))))
+
+(deftest list-status-on-cljs
+  (let [stub (fn [_] {:status 200 :response-headers {}
+                      :body (client/write-json {:items [{:id "a" :status {:privacyStatus "unlisted"}}]})})]
+    (is (= {"a" {:privacyStatus "unlisted"}} (videos/list-status! "tok" ["a" "b"] {:http-fn stub})))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ (or fail 0) (or error 0))) (js/process.exit 1)))
