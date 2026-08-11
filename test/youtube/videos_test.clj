@@ -56,3 +56,38 @@
         result (videos/update-video! "tok" "yt123" {:snippet {:title "new"}} {:http-fn stub})]
     (is (= "yt123" (:id result)))
     (is (= :put (:method (first @calls))))))
+
+;; ---- privacy: read-modify-write, added 2026-08-11 -------------------------
+;; The knowledge these guard used to live only in a docstring in
+;; gftdcojp/ai-gftd-ghosthacker-shiropico/tools/youtube_set_privacy.py.
+
+(deftest privacy-body-preserves-the-rest-of-status
+  (testing "videos.update replaces the whole status part, so it must be carried through"
+    (let [b (videos/privacy-body "vid1"
+                                 {:license "creativeCommon" :embeddable false
+                                  :publicStatsViewable false :madeForKids true}
+                                 "public")]
+      (is (= "public" (get-in b [:status :privacyStatus])))
+      (is (= "creativeCommon" (get-in b [:status :license])))
+      (is (false? (get-in b [:status :embeddable])))
+      (is (false? (get-in b [:status :publicStatsViewable])))
+      (testing "madeForKids is read-only outbound and must be written back under the other name"
+        (is (true? (get-in b [:status :selfDeclaredMadeForKids])))
+        (is (nil? (get-in b [:status :madeForKids])))))))
+
+(deftest privacy-body-defaults-match-the-api
+  (let [b (videos/privacy-body "vid1" {} "unlisted")]
+    (is (= "youtube" (get-in b [:status :license])))
+    (is (true? (get-in b [:status :embeddable])))
+    (is (false? (get-in b [:status :selfDeclaredMadeForKids])))))
+
+(deftest list-status-maps-ids-and-omits-missing
+  (let [captured (atom nil)
+        stub (fn [req] (reset! captured req)
+               {:status 200 :response-headers {}
+                :body "{\"items\":[{\"id\":\"a\",\"status\":{\"privacyStatus\":\"unlisted\"}}]}"})
+        m (videos/list-status! "tok" ["a" "b"] {:http-fn stub})]
+    (is (= {"a" {:privacyStatus "unlisted"}} m))
+    (testing "an id YouTube does not return is absent, not nil-valued"
+      (is (not (contains? m "b"))))
+    (is (re-find #"id=a,b" (:url @captured)))))

@@ -2,10 +2,61 @@
   "`videos.insert` (resumable, single-chunk PUT) and `videos.update`. Ported
   1:1 from `kotoba-lang/youtube-upload`'s `client.py` `upload_video` (the
   metadata shape, header names, and status-code checks are unchanged)."
-  (:require [youtube.client :as client]))
+  (:require [clojure.string :as str]
+            [youtube.client :as client]))
 
 (def videos-insert-url (str client/upload-api "/videos?uploadType=resumable&part=snippet,status"))
 (def videos-update-url (str client/data-api "/videos?part=snippet,status"))
+(def videos-status-url (str client/data-api "/videos?part=status"))
+
+(defn list-status!
+  "videos.list?part=status for up to 50 ids -> {video-id status-map}.
+  Ids YouTube does not return (deleted, or not yours) are simply absent, so
+  callers can tell 'not found' from 'found with this status'."
+  ([access-token ids] (list-status! access-token ids {}))
+  ([access-token ids {:keys [http-fn] :or {http-fn (client/default-http-fn)}}]
+   (let [resp (http-fn {:url (str videos-status-url "&id=" (str/join "," ids))
+                        :method :get
+                        :headers (client/auth-header access-token)})]
+     (when-not (#{200} (:status resp))
+       (throw (ex-info "youtube videos.list failed"
+                       {:stage :list :status (:status resp) :body (:body resp)})))
+     (into {} (map (juxt :id :status)) (:items (client/read-json (:body resp)))))))
+
+(defn privacy-body
+  "The videos.update?part=status body that changes privacy **and nothing else**.
+
+  videos.update REPLACES the whole `status` part: any field left out reverts
+  to its API default. PUTting a bare {:privacyStatus \"public\"} therefore
+  silently clears selfDeclaredMadeForKids / embeddable / license — on a
+  children's channel that is a compliance change nobody asked for. So the
+  current status is read first and carried through.
+
+  `madeForKids` is read-only on the way out but has to be written back under
+  the *different* name `selfDeclaredMadeForKids`; they are the same setting."
+  [video-id current-status privacy]
+  {:id video-id
+   :status {:privacyStatus privacy
+            :license (get current-status :license "youtube")
+            :embeddable (get current-status :embeddable true)
+            :publicStatsViewable (get current-status :publicStatsViewable true)
+            :selfDeclaredMadeForKids (get current-status :madeForKids false)}})
+
+(defn set-privacy!
+  "Read-modify-write a single video's privacy, preserving the rest of `status`."
+  ([access-token video-id current-status privacy]
+   (set-privacy! access-token video-id current-status privacy {}))
+  ([access-token video-id current-status privacy {:keys [http-fn] :or {http-fn (client/default-http-fn)}}]
+   (let [resp (http-fn {:url videos-status-url
+                        :method :put
+                        :headers (merge (client/auth-header access-token)
+                                        {"Content-Type" "application/json; charset=UTF-8"})
+                        :body (client/write-json (privacy-body video-id current-status privacy))})]
+     (when-not (#{200} (:status resp))
+       (throw (ex-info "youtube videos.update (privacy) failed"
+                       {:stage :privacy :video-id video-id
+                        :status (:status resp) :body (:body resp)})))
+     (client/read-json (:body resp)))))
 
 (defn video-metadata
   "{:title :description :tags :category-id :default-language :privacy-status
