@@ -36,20 +36,18 @@
   mirrors `ai-gftd-project-yukkuri/docs/youtube-upload-setup.md`'s policy
   that these are operator-injected, never code-held."
   (:require [clojure.string :as str]
-            #?(:clj [jsonista.core :as json])))
+            #?(:clj [json.compat :as json])))
 
 (def token-url "https://oauth2.googleapis.com/token")
 (def data-api "https://www.googleapis.com/youtube/v3")
 (def upload-api "https://www.googleapis.com/upload/youtube/v3")
 
-#?(:clj (def mapper (json/object-mapper {:decode-key-fn keyword})))
-
 (defn write-json [x]
-  #?(:clj  (json/write-value-as-string x mapper)
+  #?(:clj  (json/generate-string x)
      :cljs (js/JSON.stringify (clj->js x))))
 
 (defn read-json [s]
-  #?(:clj  (json/read-value s mapper)
+  #?(:clj  (json/parse-string s true)
      :cljs (js->clj (js/JSON.parse s) :keywordize-keys true)))
 
 (defn url-encode
