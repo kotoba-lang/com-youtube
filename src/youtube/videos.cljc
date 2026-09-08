@@ -2,7 +2,7 @@
   "`videos.insert` (resumable, single-chunk PUT) and `videos.update`. Ported
   1:1 from `kotoba-lang/youtube-upload`'s `client.py` `upload_video` (the
   metadata shape, header names, and status-code checks are unchanged)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [youtube.client :as client]))
 
 (def videos-insert-url (str client/upload-api "/videos?uploadType=resumable&part=snippet,status"))

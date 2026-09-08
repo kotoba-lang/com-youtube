@@ -35,7 +35,7 @@
   (or read them from wherever their own env/secret store keeps them) --
   mirrors `ai-gftd-project-yukkuri/docs/youtube-upload-setup.md`'s policy
   that these are operator-injected, never code-held."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             #?(:clj [json.compat :as json])))
 
 (def token-url "https://oauth2.googleapis.com/token")
@@ -126,7 +126,7 @@
                       (java.net.http.HttpResponse$BodyHandlers/ofString))]
        {:status (.statusCode resp)
         :body (.body resp)
-        :response-headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)]))
+        :response-headers (into {} (map (fn [[k vs]] [(str/lower k) (first vs)]))
                                 (.map (.headers resp)))})))))
 
 (defn default-http-fn
