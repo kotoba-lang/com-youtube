@@ -2,7 +2,7 @@
   "`captions.insert` -- multipart/related upload of a single SRT track.
   Ported 1:1 from `kotoba-lang/youtube-upload`'s `client.py` `upload_caption`
   (boundary format, part ordering, and content-types are unchanged)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [youtube.client :as client]))
 
 (def captions-insert-url (str client/upload-api "/captions?uploadType=multipart&part=snippet"))
