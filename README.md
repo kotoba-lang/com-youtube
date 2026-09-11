@@ -81,5 +81,5 @@ channel owner mints once), never code-held or committed.
 Run tests:
 
 ```sh
-clojure -M:test
+kbb -M:test
 ```
